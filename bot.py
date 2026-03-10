@@ -22,9 +22,10 @@ from dotenv import load_dotenv
 # ── Загрузка переменных окружения ────────────────────────────────────────────
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID   = int(os.getenv("ADMIN_ID", "0"))
-API_URL    = "http://api.onlysq.ru/ai/v2"
+BOT_TOKEN       = os.getenv("BOT_TOKEN")
+ADMIN_ID        = int(os.getenv("ADMIN_ID", "0"))
+ONLYSQ_API_KEY  = os.getenv("ONLYSQ_API_KEY", "openai")   # Получите ключ на https://my.onlysq.ru
+API_URL         = "http://api.onlysq.ru/ai/v2"
 
 # ── Логирование ───────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -226,7 +227,7 @@ async def _call_api(messages: list, model: str) -> str | None:
         "model": model,
         "request": {"messages": messages}
     }
-    headers = {"Authorization": "Bearer openai"}
+    headers = {"Authorization": f"Bearer {ONLYSQ_API_KEY}"}
     try:
         timeout = aiohttp.ClientTimeout(total=120)
         async with aiohttp.ClientSession(timeout=timeout) as session:
