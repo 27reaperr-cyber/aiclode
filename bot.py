@@ -207,7 +207,7 @@ async def send_ai_request(code: str, user_request: str) -> str | None:
 - В "old_code" и "marker" — ТОЧНАЯ строка из кода
 - Действия: replace | add_after | add_before | delete
 """
-    user_prompt = f"КОД:
+    user_prompt = f"""КОД:
 ```
 {code}
 ```
