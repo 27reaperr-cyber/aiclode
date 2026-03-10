@@ -22,12 +22,12 @@ from dotenv import load_dotenv
 # ── Загрузка переменных окружения ────────────────────────────────────────────
 load_dotenv()
 
-BOT_TOKEN       = os.getenv("BOT_TOKEN")
-ADMIN_ID        = int(os.getenv("ADMIN_ID", "0"))
-ONLYSQ_API_KEY  = os.getenv("ONLYSQ_API_KEY", "openai")   # Получите ключ на https://my.onlysq.ru
-API_URL         = "http://api.onlysq.ru/ai/v2"
-MODELS_URL      = "https://api.onlysq.ru/ai/models"
-MODELS_TOP_N    = 10   # сколько моделей показывать пользователю
+BOT_TOKEN      = os.getenv("BOT_TOKEN")
+ADMIN_ID       = int(os.getenv("ADMIN_ID", "0"))
+ONLYSQ_API_KEY = os.getenv("ONLYSQ_API_KEY", "openai")  # https://my.onlysq.ru
+API_URL        = "http://api.onlysq.ru/ai/v2"
+MODELS_URL     = "https://api.onlysq.ru/ai/models"
+MODELS_TOP_N   = 10
 
 # ── Логирование ───────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -52,113 +52,179 @@ S = {
     "down":    "⬊",   # направление вниз
 }
 
-# ── Динамический список моделей (парсится с API) ─────────────────────────────
-# Резервный список — используется если API недоступен при старте
-_FALLBACK_MODELS = [
-    "gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite",
-    "deepseek-v3", "deepseek-r1", "gemini-2.0-flash-lite",
+# Резервный список (если API недоступен при старте)
+_FALLBACK_MODELS: list[str] = [
+    "gemini-2.0-flash", "gemini-2.5-flash", "deepseek-v3", "deepseek-r1",
+]
+AVAILABLE_MODELS: list[str] = list(_FALLBACK_MODELS)
+_models_last_updated: str   = "ne zagruzhalas'"
+
+# Семейства моделей (более специфичные — выше)
+_FAMILIES: list[tuple[str, str]] = [
+    ("gpt-4o",          "ChatGPT 4o"),
+    ("gpt-4",           "ChatGPT 4"),
+    ("gpt-3.5",         "ChatGPT 3.5"),
+    ("gpt-5",           "ChatGPT 5"),
+    ("gpt",             "ChatGPT"),
+    ("o1-mini",         "OpenAI o1 mini"),
+    ("o1",              "OpenAI o1"),
+    ("o3-mini",         "OpenAI o3 mini"),
+    ("o3",              "OpenAI o3"),
+    ("gemini-3-pro",    "Gemini 3 Pro"),
+    ("gemini-3-flash",  "Gemini 3 Flash"),
+    ("gemini-3",        "Gemini 3"),
+    ("gemini-2.5-pro",  "Gemini 2.5 Pro"),
+    ("gemini-2.5-flash","Gemini 2.5 Flash"),
+    ("gemini-2.5",      "Gemini 2.5"),
+    ("gemini-2.0-flash","Gemini 2.0 Flash"),
+    ("gemini-2.0",      "Gemini 2.0"),
+    ("gemini-1.5-pro",  "Gemini 1.5 Pro"),
+    ("gemini-1.5",      "Gemini 1.5"),
+    ("gemini",          "Gemini"),
+    ("deepseek-r1",     "DeepSeek R1"),
+    ("deepseek-v3",     "DeepSeek V3"),
+    ("deepseek-v2",     "DeepSeek V2"),
+    ("deepseek-chat",   "DeepSeek Chat"),
+    ("deepseek",        "DeepSeek"),
+    ("claude-3-opus",   "Claude 3 Opus"),
+    ("claude-3-sonnet", "Claude 3 Sonnet"),
+    ("claude-3-haiku",  "Claude 3 Haiku"),
+    ("claude-3",        "Claude 3"),
+    ("claude",          "Claude"),
+    ("llama-3.3",       "Llama 3.3"),
+    ("llama-3.2",       "Llama 3.2"),
+    ("llama-3.1",       "Llama 3.1"),
+    ("llama-3",         "Llama 3"),
+    ("llama",           "Llama"),
+    ("mistral-large",   "Mistral Large"),
+    ("mistral-small",   "Mistral Small"),
+    ("mistral",         "Mistral"),
+    ("qwen2.5",         "Qwen 2.5"),
+    ("qwen2",           "Qwen 2"),
+    ("qwen",            "Qwen"),
+    ("grok",            "Grok"),
+    ("phi-3",           "Phi 3"),
+    ("phi",             "Phi"),
 ]
 
-# Глобальный кэш актуальных моделей (обновляется при старте и по /reload_models)
-AVAILABLE_MODELS: list[str] = list(_FALLBACK_MODELS)
-_models_last_updated: str   = "не обновлялись"
-
-
-# Приоритет моделей — чем выше, тем лучше (по умолчанию)
-_MODEL_PRIORITY: dict[str, int] = {
-    "gpt":      5,
-    "gemini-3": 4,
-    "gemini-2.5": 3,
-    "gemini-2.0": 2,
-    "deepseek": 1,
+_QUALITY: dict[str, int] = {
+    "ultra": 100, "max": 90, "opus": 80, "pro": 70, "plus": 60,
+    "large": 55, "sonnet": 50, "standard": 45, "chat": 40,
+    "flash": 30, "small": 25, "haiku": 20,
+    "mini": 15, "lite": 10, "light": 5,
 }
 
-def _score_model(name: str) -> int:
-    """Вычисляет приоритет модели по её имени."""
-    name_lower = name.lower()
-    for key, score in _MODEL_PRIORITY.items():
-        if key in name_lower:
-            return score
-    return 0
+def _family_of(name: str) -> str:
+    low = name.lower()
+    for key, label in _FAMILIES:
+        if key in low:
+            return label
+    return "other:" + name
+
+def _quality_score(name: str) -> float:
+    low = name.lower()
+    score = 0.0
+    for kw, pts in _QUALITY.items():
+        if kw in low:
+            score += pts
+    for m in re.findall(r"(\d+)(?:\.(\d+))?", low):
+        score += int(m[0]) * 5 + int(m[1] or 0) * 0.5
+    return score
 
 
-async def fetch_free_models() -> list[str]:
-    """
-    GET https://api.onlysq.ru/ai/models
-    Парсит список, фильтрует бесплатные, возвращает топ MODELS_TOP_N.
-    """
+async def _probe_model(session: aiohttp.ClientSession, model: str) -> bool:
+    payload = {
+        "model": model,
+        "request": {"messages": [{"role": "user", "content": "1"}]},
+    }
     headers = {"Authorization": f"Bearer {ONLYSQ_API_KEY}"}
     try:
-        timeout = aiohttp.ClientTimeout(total=15)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(MODELS_URL, headers=headers) as resp:
-                text = await resp.text()
-                logging.info(f"Список моделей | статус={resp.status} | {text[:300]}")
+        async with session.post(
+            API_URL, json=payload, headers=headers,
+            timeout=aiohttp.ClientTimeout(total=12),
+        ) as resp:
+            ok = resp.status == 200
+            logging.info(f"  probe [{resp.status}] {model} -> {'OK' if ok else 'skip'}")
+            return ok
+    except Exception as exc:
+        logging.warning(f"  probe [err] {model}: {exc}")
+        return False
 
+
+async def fetch_and_validate_models() -> list[str]:
+    raw: list[str] = []
+    try:
+        hdrs = {"Authorization": f"Bearer {ONLYSQ_API_KEY}"}
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
+            async with s.get(MODELS_URL, headers=hdrs) as resp:
+                body = await resp.text()
+                logging.info(f"GET models -> {resp.status} | {body[:200]}")
                 if resp.status != 200:
-                    logging.warning(f"fetch_free_models: статус {resp.status}")
                     return []
-
                 data = await resp.json(content_type=None)
-
-                # API может вернуть: список строк, список объектов {id/name}, или {"data": [...]}
-                raw: list = []
-                if isinstance(data, list):
-                    raw = data
-                elif isinstance(data, dict):
-                    raw = data.get("data", data.get("models", []))
-
-                models: list[str] = []
-                for item in raw:
-                    if isinstance(item, str):
-                        models.append(item)
-                    elif isinstance(item, dict):
-                        # Поддержка форматов: {id}, {name}, {model}
-                        name = item.get("id") or item.get("name") or item.get("model", "")
-                        # Фильтруем только бесплатные если есть поле
-                        tier = str(item.get("tier", item.get("type", "free"))).lower()
-                        if name and ("free" in tier or tier in ("", "null", "none")):
-                            models.append(name)
-                        elif name and "tier" not in item and "type" not in item:
-                            # Нет поля тарифа — считаем доступной
-                            models.append(name)
-
-                if not models:
-                    logging.warning("fetch_free_models: список пуст после парсинга")
-                    return []
-
-                # Дедупликация
-                seen = set()
-                unique = []
-                for m in models:
-                    if m not in seen:
-                        seen.add(m)
-                        unique.append(m)
-
-                # Сортируем по приоритету и берём топ N
-                top = sorted(unique, key=_score_model, reverse=True)[:MODELS_TOP_N]
-                logging.info(f"fetch_free_models: найдено {len(unique)}, топ {len(top)}: {top}")
-                return top
-
-    except Exception as e:
-        logging.error(f"fetch_free_models ошибка: {e}")
+        items = data if isinstance(data, list) else \
+                data.get("data", data.get("models", []))
+        for item in items:
+            if isinstance(item, str):
+                name = item.strip()
+            elif isinstance(item, dict):
+                name = (item.get("id") or item.get("name")
+                        or item.get("model", "")).strip()
+                tier = str(item.get("tier", item.get("type", "free"))).lower()
+                if tier and tier not in ("free", "null", "none", ""):
+                    continue
+            else:
+                continue
+            if name:
+                raw.append(name)
+    except Exception as exc:
+        logging.error(f"fetch_and_validate_models: {exc}")
         return []
+
+    logging.info(f"Всего моделей: {len(raw)}")
+    if not raw:
+        return []
+
+    # Дедупликация по семейству — одна лучшая на каждое
+    family_best: dict[str, tuple[float, str]] = {}
+    for m in raw:
+        fam = _family_of(m)
+        sc  = _quality_score(m)
+        if fam not in family_best or sc > family_best[fam][0]:
+            family_best[fam] = (sc, m)
+    candidates = [name for _, name in
+                  sorted(family_best.values(), key=lambda x: x[0], reverse=True)]
+    logging.info(f"После дедупликации ({len(candidates)}): {candidates}")
+
+    # Параллельная проверка с ограничением
+    sem = asyncio.Semaphore(6)
+    async def _limited(session, model):
+        async with sem:
+            return await _probe_model(session, model)
+    async with aiohttp.ClientSession() as session:
+        results = await asyncio.gather(
+            *[_limited(session, m) for m in candidates],
+            return_exceptions=True,
+        )
+    working = [m for m, ok in zip(candidates, results) if ok is True]
+    logging.info(f"Рабочих: {len(working)} -> {working}")
+    working.sort(key=_quality_score, reverse=True)
+    return working[:MODELS_TOP_N]
 
 
 async def refresh_models() -> bool:
-    """Обновляет AVAILABLE_MODELS. Возвращает True если успешно."""
     global AVAILABLE_MODELS, _models_last_updated
-    fresh = await fetch_free_models()
+    from datetime import datetime
+    fresh = await fetch_and_validate_models()
     if fresh:
         AVAILABLE_MODELS = fresh
-        from datetime import datetime
         _models_last_updated = datetime.now().strftime("%d.%m.%Y %H:%M")
         logging.info(f"Модели обновлены: {AVAILABLE_MODELS}")
         return True
-    else:
-        logging.warning("Модели не обновлены — используется резервный список")
-        AVAILABLE_MODELS = list(_FALLBACK_MODELS)
-        return False
+    logging.warning("Резервный список")
+    AVAILABLE_MODELS = list(_FALLBACK_MODELS)
+    _models_last_updated = "резервный список"
+    return False
 
 # ── FSM состояния ─────────────────────────────────────────────────────────────
 class BotStates(StatesGroup):
@@ -549,8 +615,7 @@ async def _show_admin(message: Message):
         f"<blockquote>"
         f"{S['copy']} Пользователей: <b>{total}</b>\n"
         f"✯ Всего запросов: <b>{reqs}</b>\n"
-        f"༄ Доступно моделей: <b>{len(AVAILABLE_MODELS)}</b>\n"
-        f"{S['arrow']} Обновлено: {_models_last_updated}"
+        f"༄ Доступно моделей: <b>{len(AVAILABLE_MODELS)}</b>"
         f"</blockquote>",
         parse_mode="HTML"
     )
@@ -598,8 +663,7 @@ async def test_api(message: Message):
             f"{S['err']} <b>API не отвечает</b>\n\n"
             f"<blockquote>{S['up']} URL: <code>{API_URL}</code>\n"
             f"✯ Модель: <code>{model}</code></blockquote>\n\n"
-            f"{S['warn']} Проверьте логи для деталей\n\n"
-            f"<blockquote>☛ Обновить модели: /reload_models</blockquote>",
+            f"{S['warn']} Проверьте логи для деталей",
             parse_mode="HTML"
         )
 
@@ -893,35 +957,34 @@ async def cancel_clear(callback: CallbackQuery):
     await callback.answer()
 
 
-
 # ══════════════════════════════════════════════════════════════════════════════
-#  /reload_models  — обновить список моделей с API (только для админа)
+#  /reload_models
 # ══════════════════════════════════════════════════════════════════════════════
 @dp.message(Command("reload_models"))
 async def cmd_reload_models(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
     status_msg = await message.answer(
-        "༄ <b>Обновление списка моделей...</b>\n\n"
-        f"<blockquote>{S['arrow']} Запрос к {MODELS_URL}</blockquote>",
+        "༄ <b>Обновление моделей...</b>\n\n"
+        "<blockquote>☛ Shag 1: zaghruzka spiska\n☛ Shag 2: deduplication po semeystvu\n☛ Shag 3: ping kazhdoy modeli</blockquote>",
         parse_mode="HTML"
     )
     ok = await refresh_models()
     if ok:
-        models_list = "\n".join(f"☛ <code>{m}</code>" for m in AVAILABLE_MODELS)
+        lines = "\n".join(
+            f"{S['ok']} <code>{m}</code>  <i>({_family_of(m)})</i>"
+            for m in AVAILABLE_MODELS
+        )
         await status_msg.edit_text(
-            f"{S['ok']} <b>Модели обновлены!</b>\n\n"
-            f"<blockquote>{S['copy']} Обновлено: {_models_last_updated}\n"
-            f"༄ Топ-{len(AVAILABLE_MODELS)}:</blockquote>\n\n"
-            + models_list,
+            f"{S['ok']} <b>Gotovo! Rabochikh: {len(AVAILABLE_MODELS)}</b>\n"
+            f"<blockquote>{S['copy']} Obnovleno: {_models_last_updated}</blockquote>\n\n"
+            + lines,
             parse_mode="HTML"
         )
     else:
-        models_list = "\n".join(f"☛ <code>{m}</code>" for m in AVAILABLE_MODELS)
+        lines = "\n".join(f"☛ <code>{m}</code>" for m in AVAILABLE_MODELS)
         await status_msg.edit_text(
-            f"{S['warn']} <b>Не удалось загрузить модели с API</b>\n\n"
-            "<blockquote>Используется резервный список:</blockquote>\n\n"
-            + models_list,
+            f"{S['warn']} <b>API nedostupen - rezervnyy spisok</b>\n\n" + lines,
             parse_mode="HTML"
         )
 
@@ -969,7 +1032,7 @@ async def show_info(message: Message):
 
     cmds = "/start — главное меню\n/cancel — отмена операции"
     if is_admin:
-        cmds += "\n/admin — админ панель\n/test — тест API\n/reload_models — обновить модели"
+        cmds += "\n/admin — админ панель\n/test — тест API"
 
     await message.answer(
         f"{S['copy']} <b>AI Code Editor</b>\n\n"
@@ -985,8 +1048,7 @@ async def show_info(message: Message):
         f"<b>{S['copy']} Команды:</b>\n"
         f"<blockquote>{cmds}</blockquote>\n\n"
         f"✯ <b>Модель:</b> <code>{current}</code>\n"
-        f"༄ <b>Моделей доступно:</b> {len(AVAILABLE_MODELS)}\n"
-        f"{S['copy']} <b>Обновлено:</b> {_models_last_updated}\n\n"
+        f"༄ <b>Моделей доступно:</b> {len(AVAILABLE_MODELS)}\n\n"
         f"<blockquote>{S['copy']} Больше проектов: @dreinnh</blockquote>",
         parse_mode="HTML"
     )
@@ -1017,12 +1079,12 @@ async def show_support(message: Message):
 # ══════════════════════════════════════════════════════════════════════════════
 async def main():
     init_db()
-    logging.info("༄ Загрузка свободных моделей с API...")
+    logging.info("Загрузка и проверка моделей с API...")
     ok = await refresh_models()
     if ok:
-        logging.info(f"༄ Топ-{MODELS_TOP_N} моделей загружены: {AVAILABLE_MODELS}")
+        logging.info(f"Рабочих моделей: {len(AVAILABLE_MODELS)} -> {AVAILABLE_MODELS}")
     else:
-        logging.warning(f"⬈ Используется резервный список: {AVAILABLE_MODELS}")
+        logging.warning(f"Резервный список: {AVAILABLE_MODELS}")
     logging.info("༄ AI Code Editor Bot запущен!")
     await dp.start_polling(bot)
 
